@@ -31,6 +31,7 @@
     .space{height:10px}
     .right{margin-left:auto}
     .rev-card{min-height:180px;display:flex;align-items:center;justify-content:center;text-align:center;font-size:22px;padding:18px;border:1px dashed #2d3748;border-radius:16px;background:#0f1623}
+    .small{font-size:12px}
   </style>
 </head>
 <body>
@@ -104,9 +105,21 @@
         <div class="row" style="margin-top:8px">
           <button class="btn acc" id="aiGenerateReal">Generate with AI</button>
         </div>
-        <div class="muted" style="font-size:12px;margin-top:6px">
-          Uses OpenAI via your Vercel backend. New cards are tagged “AI”.
+        <div id="aiStatus" class="muted small" style="margin-top:6px"></div>
+      </div>
+
+      <!-- Import notes / slides / photos -->
+      <div class="space"></div>
+      <div class="card">
+        <h3 style="margin:0 0 8px">Import notes / slides / photos</h3>
+        <input id="noteFiles" type="file" multiple accept=".pdf,.ppt,.pptx,.docx,image/*" />
+        <div class="row" style="margin-top:8px">
+          <button class="btn" id="extractNotesBtn">Extract &amp; Generate</button>
         </div>
+        <div class="muted small" style="margin-top:6px">
+          PDFs & PPTX are parsed to text. Images (including handwriting) are read with AI OCR.
+        </div>
+        <div id="extractStatus" class="muted small" style="margin-top:6px"></div>
       </div>
 
       <div class="space"></div>
@@ -269,7 +282,7 @@
   }
 
   function escapeHTML(s){
-    return (s||'').replace(/[&<>"]/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[m]));
+    return (s||'').replace(/[&<>"]/g, m=>({"&":"&amp;","<":"&lt;","&gt;":"&gt;","\"":"&quot;"}[m]));
   }
 
   // ------------------------
@@ -367,14 +380,19 @@
     // Register service worker for PWA
     if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js'); }
 
-    // --- AI Generate (OpenAI via your Vercel backend) ---
+    // --- Endpoints ---
     const AI_ENDPOINT = "https://flashiq-ai-backend.vercel.app/api/generate";
+    const EXTRACT_ENDPOINT = "https://flashiq-ai-backend.vercel.app/api/extract";
+
+    // --- AI Generate from text box ---
     const aiBtn = document.getElementById("aiGenerateReal");
+    const aiStatus = document.getElementById("aiStatus");
     if(aiBtn){
       aiBtn.addEventListener("click", async () => {
         if (!CURRENT_DECK) { alert('Open a deck first.'); return; }
         const text = (document.getElementById("aiInput").value || "").trim();
         if (!text) return;
+        aiStatus.textContent = "Generating cards…";
 
         try {
           const resp = await fetch(AI_ENDPOINT, {
@@ -385,7 +403,7 @@
           const data = await resp.json();
           const cards = (data.cards || []).filter(c => c.front && c.back);
 
-          if (!cards.length) { alert("No cards returned. Try shorter, denser notes."); return; }
+          if (!cards.length) { aiStatus.textContent = "No cards returned. Try shorter, denser notes."; return; }
 
           for (const c of cards) {
             const id = uid();
@@ -394,13 +412,80 @@
           }
           saveDB(DB);
           renderDeckView();
-          alert(`Added ${cards.length} AI-generated cards.`);
+          aiStatus.textContent = `Added ${cards.length} AI-generated cards.`;
         } catch (e) {
           console.error(e);
-          alert("AI request failed.");
+          aiStatus.textContent = "AI request failed.";
         }
       });
     }
+
+    // --- Import notes/slides/photos -> extract -> generate ---
+    const extractBtn = document.getElementById('extractNotesBtn');
+    const extractStatus = document.getElementById('extractStatus');
+    if (extractBtn){
+      extractBtn.addEventListener('click', async ()=>{
+        if (!CURRENT_DECK) { alert('Open a deck first.'); return; }
+        const input = document.getElementById('noteFiles');
+        if (!input.files.length) { alert('Choose one or more files first.'); return; }
+
+        try {
+          extractStatus.textContent = "Uploading & extracting text…";
+          const form = new FormData();
+          for (const f of input.files) form.append('files', f);
+
+          const ex = await fetch(EXTRACT_ENDPOINT, { method: 'POST', body: form });
+          const exData = await ex.json();
+          const raw = (exData.text || "").trim();
+          if (!raw || raw.length < 20) { extractStatus.textContent = "Could not extract readable text."; return; }
+
+          // Chunk long text into ~8000-char chunks to be safe
+          const chunks = chunkText(raw, 8000);
+          let totalCards = 0;
+
+          for (let i=0; i<chunks.length; i++){
+            extractStatus.textContent = `Generating cards… (${i+1}/${chunks.length})`;
+            const resp = await fetch(AI_ENDPOINT, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: chunks[i] })
+            });
+            const data = await resp.json();
+            const cards = (data.cards || []).filter(c => c.front && c.back);
+            for (const c of cards) {
+              const id = uid();
+              DB.cards[id] = { id, front: c.front, back: c.back, tags: ['AI','import'], ease:2.5, reps:0, interval:0, due: todayISO() };
+              DB.decks[CURRENT_DECK].cards.push(id);
+            }
+            totalCards += cards.length;
+            saveDB(DB);
+          }
+
+          renderDeckView();
+          extractStatus.textContent = totalCards ? `Added ${totalCards} cards from your files.` : "No cards generated from extracted text.";
+          input.value = "";
+        } catch (err){
+          console.error(err);
+          extractStatus.textContent = "Import failed.";
+        }
+      });
+    }
+
+    function chunkText(t, size){
+      if (t.length <= size) return [t];
+      const out = [];
+      let i = 0;
+      while (i < t.length) {
+        let end = Math.min(i + size, t.length);
+        // try to end on a paragraph break
+        const nextBreak = t.lastIndexOf("\n", end);
+        if (nextBreak > i + size * 0.6) end = nextBreak;
+        out.push(t.slice(i, end));
+        i = end;
+      }
+      return out;
+    }
+
   });
 
   function showView(name){
