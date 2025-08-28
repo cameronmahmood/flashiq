@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>StudyCards — PWA</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <style>
+    :root{--bg:#0b0b10;--panel:#111827;--muted:#a7aab7;--fg:#fff;--acc:#60a5fa;--ok:#34d399;--warn:#fbbf24;--bad:#f87171}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Arial,sans-serif}
+    .wrap{max-width:980px;margin:0 auto;padding:16px}
+    h1{margin:6px 0 10px;font-size:clamp(18px,3vw,24px)}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .card{background:var(--panel);border:1px solid #1f2937;border-radius:16px;padding:14px}
+    .btn{background:#1f2937;border:1px solid #2d3748;color:var(--fg);padding:8px 12px;border-radius:12px;font-weight:600;cursor:pointer}
+    .btn:hover{filter:brightness(1.1)}
+    .btn.acc{border-color:var(--acc)}
+    .btn.ok{border-color:var(--ok)}
+    .btn.warn{border-color:var(--warn)}
+    .btn.bad{border-color:var(--bad)}
+    input,textarea,select{background:#0f1623;border:1px solid #253043;color:var(--fg);padding:8px;border-radius:10px;width:100%}
+    label{color:var(--muted);font-size:14px}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    @media(max-width:800px){.grid{grid-template-columns:1fr}}
+    .muted{color:var(--muted)}
+    .deck{display:flex;justify-content:space-between;align-items:center;border:1px solid #1f2937;background:#0f1623;border-radius:12px;padding:10px}
+    .pill{background:#0b1220;color:var(--muted);border:1px solid #20304b;padding:4px 8px;border-radius:999px;font-size:12px}
+    .tabs{display:flex;gap:8px;margin:10px 0}
+    .tab{padding:8px 12px;border-radius:10px;border:1px solid #2d3748;background:#0f1623;cursor:pointer}
+    .tab.active{border-color:var(--acc);background:#112033}
+    .space{height:10px}
+    .right{margin-left:auto}
+    .rev-card{min-height:180px;display:flex;align-items:center;justify-content:center;text-align:center;font-size:22px;padding:18px;border:1px dashed #2d3748;border-radius:16px;background:#0f1623}
+  </style>
+  <script>
+  // ------------------------
+  // Simple localStorage store
+  // ------------------------
+  const DB_KEY = 'studycards_v1';
+  function loadDB(){ try{ return JSON.parse(localStorage.getItem(DB_KEY)) || {decks:{}} }catch{ return {decks:{}} } }
+  function saveDB(db){ localStorage.setItem(DB_KEY, JSON.stringify(db)); }
+
+  // Card model: {id, front, back, tags:[], ease:2.5, reps:0, interval:0, due:ISO}
+  // Deck model: {id, title, created, cards:[cardId,...]}
+
+  const uid = () => Math.random().toString(36).slice(2,9);
+  const todayISO = () => new Date().toISOString().slice(0,10);
+
+  // --- SM-2-ish scheduling (very small variant) ---
+  function gradeCard(card, grade){
+    // grade: 0=Again, 1=Hard, 2=Good, 3=Easy
+    const now = new Date();
+    if(card.reps === 0){ card.interval = (grade <= 1) ? 1 : 1; card.reps = 1; }
+    else if(card.reps === 1){ card.interval = (grade <= 1) ? 2 : 3; card.reps = 2; }
+    else {
+      // Update ease (SM‑2 style, minimal)
+      const q = grade===3?5:(grade===2?4:(grade===1?3:2));
+      card.ease = Math.max(1.3, (card.ease || 2.5) + (0.1 - (5-q)*(0.08 + (5-q)*0.02)));
+      const mult = (card.ease || 2.5);
+      const hardPenalty = grade===1 ? 0.85 : 1;
+      card.interval = Math.round((card.interval || 3) * mult * hardPenalty);
+      card.reps += 1;
+    }
+    const due = new Date(now.getTime() + card.interval*24*3600*1000);
+    card.due = due.toISOString().slice(0,10);
+  }
+
+  // ------------------------
+  // App state & helpers
+  // ------------------------
+  let DB = loadDB();
+  let CURRENT_DECK = null;
+  let REVIEW_QUEUE = []; // array of card objects (cloned)
+  let SHOW_BACK = false;
+
+  function listDueCards(deck){
+    const today = todayISO();
+    const ids = deck.cards || [];
+    const due = ids.map(id=>DB.cards[id]).filter(c => !c.due || c.due <= today);
+    // Shuffle for variety
+    for(let i=due.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [due[i],due[j]]=[due[j],due[i]] }
+    return due;
+  }
+
+  // ------------------------
+  // UI rendering
+  // ------------------------
+  function el(sel){ return document.querySelector(sel); }
+  function els(sel){ return [...document.querySelectorAll(sel)]; }
+
+  function renderDeckList(){
+    const list = el('#deckList');
+    list.innerHTML = '';
+    const decks = Object.values(DB.decks).sort((a,b)=>a.title.localeCompare(b.title));
+    if(decks.length===0){ list.innerHTML = `<div class="muted">No decks yet. Create one below.</div>`; return; }
+    for(const d of decks){
+      const due = listDueCards(d).length;
+      const total = (d.cards||[]).length;
+      const row = document.createElement('div');
+      row.className = 'deck';
+      row.innerHTML = `<div><strong>${d.title}</strong><div class="muted" style="font-size:12px">${total} cards • ${due} due</div></div>
+        <div class="row">
+          <span class="pill">id: ${d.id}</span>
+          <button class="btn acc" data-act="open" data-id="${d.id}">Open</button>
+          <button class="btn" data-act="review" data-id="${d.id}">Review</button>
+          <button class="btn" data-act="exportDeck" data-id="${d.id}">Export</button>
+          <button class="btn" data-act="delete" data-id="${d.id}">Delete</button>
+        </div>`;
+      list.appendChild(row);
+    }
+  }
+
+  function renderDeckView(){
+    const d = DB.decks[CURRENT_DECK];
+    el('#deckTitle').textContent = d.title;
+    const table = el('#cardsTable');
+    table.innerHTML = '';
+    const ids = d.cards||[];
+    if(ids.length===0){ table.innerHTML = `<div class="muted">No cards yet. Add some below.</div>`; return; }
+    for(const id of ids){
+      const c = DB.cards[id];
+      const tr = document.createElement('div');
+      tr.className = 'deck';
+      tr.innerHTML = `<div>
+        <div><strong>${escapeHTML(c.front)}</strong></div>
+        <div class="muted" style="font-size:13px">${escapeHTML(c.back)}</div>
+        <div class="muted" style="font-size:12px">tags: ${(c.tags||[]).join(', ')} • due: ${c.due||'today'} • interval: ${c.interval||0}d</div>
+      </div>
+      <div class="row">
+        <button class="btn" data-act="editCard" data-id="${c.id}">Edit</button>
+        <button class="btn bad" data-act="deleteCard" data-id="${c.id}">Delete</button>
+      </div>`;
+      table.appendChild(tr);
+    }
+  }
+
+  function renderReview(){
+    const left = REVIEW_QUEUE.length;
+    el('#revCount').textContent = `${left} due`;
+    const box = el('#revBox');
+    if(left===0){ box.innerHTML = `<div class="muted">No cards due. Great job 🎉</div>`; el('#revBtns').style.display='none'; return; }
+    el('#revBtns').style.display='flex';
+    const c = REVIEW_QUEUE[0];
+    box.innerHTML = `<div><div class="muted" style="margin-bottom:6px">${DB.decks[CURRENT_DECK].title}</div>
+    <div style="margin-bottom:10px"><strong>${SHOW_BACK? 'Answer' : 'Prompt'}</strong></div>
+    <div class="rev-card" id="flipArea">${escapeHTML(SHOW_BACK? c.back : c.front)}</div>
+    <div class="muted" style="font-size:12px;margin-top:8px">Click card or press Space to flip</div></div>`;
+  }
+
+  function escapeHTML(s){
+    return (s||'').replace(/[&<>\"]/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[m]));
+  }
+
+  // ------------------------
+  // Event wiring
+  // ------------------------
+  document.addEventListener('DOMContentLoaded', ()=>{
+    // Tab switching
+    els('.tab').forEach(t=>t.addEventListener('click',()=>{
+      els('.tab').forEach(x=>x.classList.remove('active'));
+      t.classList.add('active');
+      const name = t.dataset.tab;
+      els('[data-view]').forEach(v=>v.style.display='none');
+      el(`[data-view="${name}"]`).style.display='block';
+      if(name==='decks'){ renderDeckList(); }
+      if(name==='review'){ if(!CURRENT_DECK){ alert('Open a deck and click Review.'); return; } renderReview(); }
+    }));
+
+    // Default to Decks
+    el('[data-tab="decks"]').click();
+
+    // Create deck
+    el('#createDeck').addEventListener('submit', e=>{
+      e.preventDefault();
+      const title = el('#deckName').value.trim(); if(!title) return;
+      const id = uid();
+      DB.decks[id] = {id, title, created: new Date().toISOString(), cards: []};
+      DB.cards = DB.cards || {};
+      saveDB(DB); el('#deckName').value=''; renderDeckList();
+    });
+
+    // Deck list buttons
+    el('#deckList').addEventListener('click', e=>{
+      const btn = e.target.closest('button'); if(!btn) return;
+      const id = btn.dataset.id; const act = btn.dataset.act; const deck = DB.decks[id];
+      if(act==='open'){ CURRENT_DECK = id; showView('editor'); renderDeckView(); }
+      if(act==='review'){ CURRENT_DECK = id; REVIEW_QUEUE = listDueCards(deck); SHOW_BACK=false; showView('review'); renderReview(); }
+      if(act==='delete'){ if(confirm('Delete this deck?')){ for(const cid of deck.cards||[]){ delete DB.cards[cid]; } delete DB.decks[id]; saveDB(DB); renderDeckList(); } }
+      if(act==='exportDeck'){
+        const payload = {deck: deck, cards: (deck.cards||[]).map(cid=>DB.cards[cid])};
+        const blob = new Blob([JSON.stringify(payload,null,2)], {type:'application/json'});
+        const a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`deck-${deck.title}.json`; a.click();
+      }
+    });
+
+    // Add card
+    el('#addCard').addEventListener('submit', e=>{
+      e.preventDefault(); if(!CURRENT_DECK) return;
+      const front = el('#front').value.trim(); const back = el('#back').value.trim(); if(!front||!back) return;
+      const tags = el('#tags').value.split(',').map(s=>s.trim()).filter(Boolean);
+      const id = uid(); const card = {id, front, back, tags, ease:2.5, reps:0, interval:0, due:todayISO()};
+      DB.cards[id]=card; DB.decks[CURRENT_DECK].cards.push(id); saveDB(DB);
+      el('#front').value=''; el('#back').value=''; el('#tags').value=''; renderDeckView();
+    });
+
+    // Edit/delete card
+    el('#cardsTable').addEventListener('click', e=>{
+      const btn = e.target.closest('button'); if(!btn) return; const id = btn.dataset.id; const act = btn.dataset.act; const d = DB.decks[CURRENT_DECK];
+      if(act==='deleteCard'){
+        if(confirm('Delete card?')){ d.cards = (d.cards||[]).filter(x=>x!==id); delete DB.cards[id]; saveDB(DB); renderDeckView(); }
+      }
+      if(act==='editCard'){
+        const c = DB.cards[id];
+        const nf = prompt('Edit front:', c.front); if(nf===null) return;
+        const nb = prompt('Edit back:', c.back); if(nb===null) return;
+        const nt = prompt('Edit tags (comma-separated):', (c.tags||[]).join(', '));
+        c.front=nf.trim(); c.back=nb.trim(); c.tags=(nt||'').split(',').map(s=>s.trim()).filter(Boolean);
+        saveDB(DB); renderDeckView();
+      }
+    });
+
+    // Review actions
+    el('#flip').addEventListener('click', ()=>{ SHOW_BACK=!SHOW_BACK; renderReview(); });
+    document.addEventListener('keydown', e=>{ if(el('[data-view="review"]').style.display!=='block') return; if(e.code==='Space'){ e.preventDefault(); el('#flip').click(); } });
+    el('#again').addEventListener('click', ()=>gradeAndNext(0));
+    el('#hard').addEventListener('click', ()=>gradeAndNext(1));
+    el('#good').addEventListener('click', ()=>gradeAndNext(2));
+    el('#easy').addEventListener('click', ()=>gradeAndNext(3));
+
+    // Import JSON
+    el('#importFile').addEventListener('change', async (e)=>{
+      const f = e.target.files[0]; if(!f) return; const text = await f.text();
+      try{
+        const payload = JSON.parse(text);
+        // Accept either single deck export or full DB export
+        if(payload.decks){ DB = payload; saveDB(DB); alert('Imported full database.'); }
+        else if(payload.deck && payload.cards){
+          const deck = payload.deck; const newId = uid(); DB.decks[newId] = {id:newId, title:deck.title+" (imported)", created:new Date().toISOString(), cards:[]};
+          DB.cards = DB.cards||{}; for(const c of payload.cards){ const id = uid(); DB.cards[id] = {...c, id}; DB.decks[newId].cards.push(id); }
+          saveDB(DB); alert('Deck imported.');
+        } else { alert('Unrecognized JSON format.'); }
+        renderDeckList();
+      }catch(err){ alert('Import failed: '+err.message); }
+      e.target.value='';
+    });
+
+    // Register service worker for PWA
+    if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js'); }
+  });
+
+  function showView(name){
+    els('[data-view]').forEach(v=>v.style.display='none');
+    el(`[data-view="${name}"]`).style.display='block';
+    els('.tab').forEach(x=>x.classList.remove('active'));
+    el(`[data-tab="${name}"]`).classList.add('active');
+  }
+
+  function gradeAndNext(grade){
+    if(REVIEW_QUEUE.length===0) return;
+    const c = REVIEW_QUEUE[0];
+    gradeCard(c, grade);
+    // Persist to DB
+    DB.cards[c.id] = {...DB.cards[c.id], ease:c.ease, reps:c.reps, interval:c.interval, due:c.due};
+    saveDB(DB);
+    // Next
+    REVIEW_QUEUE.shift(); SHOW_BACK=false; renderReview();
+  }
+  </script>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🧠 StudyCards</h1>
+    <div class="tabs">
+      <div class="tab active" data-tab="decks">Decks</div>
+      <div class="tab" data-tab="editor">Editor</div>
+      <div class="tab" data-tab="review">Review</div>
+      <div class="tab" data-tab="settings">Settings</div>
+    </div>
+
+    <!-- Decks view -->
+    <div data-view="decks">
+      <div class="card">
+        <h3 style="margin:0 0 8px">Your decks</h3>
+        <div id="deckList" class="col"></div>
+      </div>
+      <div class="space"></div>
+      <div class="card">
+        <h3 style="margin:0 0 8px">Create deck</h3>
+        <form id="createDeck" class="grid">
+          <div>
+            <label>Name</label>
+            <input id="deckName" placeholder="e.g., Biology 101" required>
+          </div>
+          <div style="display:flex;align-items:flex-end">
+            <button class="btn acc" type="submit">Create</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Editor view -->
+    <div data-view="editor" style="display:none">
+      <div class="row" style="margin-bottom:6px">
+        <h3 id="deckTitle" style="margin:0">(no deck)</h3>
+        <div class="right">
+          <button class="btn" onclick="showView('decks')">Back to decks</button>
+          <button class="btn" onclick="CURRENT_DECK && (REVIEW_QUEUE=listDueCards(DB.decks[CURRENT_DECK]), SHOW_BACK=false, showView('review'), renderReview())">Review due</button>
+        </div>
+      </div>
+      <div class="card">
+        <form id="addCard" class="grid">
+          <div>
+            <label>Front</label>
+            <textarea id="front" rows="3" placeholder="Question / term" required></textarea>
+          </div>
+          <div>
+            <label>Back</label>
+            <textarea id="back" rows="3" placeholder="Answer / definition" required></textarea>
+          </div>
+          <div>
+            <label>Tags (comma-separated)</label>
+            <input id="tags" placeholder="e.g., cell, chapter1">
+          </div>
+          <div style="display:flex;align-items:flex-end">
+            <button class="btn acc" type="submit">Add card</button>
+          </div>
+        </form>
+      </div>
+      <div class="space"></div>
+      <div class="card">
+        <h3 style="margin:0 0 8px">Cards</h3>
+        <div id="cardsTable"></div>
+      </div>
+    </div>
+
+    <!-- Review view -->
+    <div data-view="review" style="display:none">
+      <div class="row" style="margin-bottom:6px">
+        <div class="pill" id="revCount">0 due</div>
+        <div class="right"><button class="btn" onclick="showView('decks')">Back</button></div>
+      </div>
+      <div class="card">
+        <div id="revBox" class="col"></div>
+        <div class="space"></div>
+        <div class="row" id="revBtns" style="justify-content:center;gap:8px">
+          <button class="btn bad" id="again">Again</button>
+          <button class="btn warn" id="hard">Hard</button>
+          <button class="btn ok" id="good">Good</button>
+          <button class="btn acc" id="easy">Easy</button>
+          <button class="btn" id="flip" title="Space">Flip</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings / Import-Export -->
+    <div data-view="settings" style="display:none">
+      <div class="card">
+        <h3 style="margin:0 0 8px">Backup / Import</h3>
+        <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn" onclick="const b=new Blob([JSON.stringify(DB,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='studycards-backup.json';a.click();">Export full database</button>
+          <label class="btn" for="importFile" style="cursor:pointer">Import JSON</label>
+          <input type="file" id="importFile" accept="application/json" style="display:none" />
+          <span class="muted">(You can also export a single deck from the Decks page)</span>
+        </div>
+      </div>
+      <div class="space"></div>
+      <div class="card muted" style="font-size:14px">
+        <div><strong>Tips</strong></div>
+        <ul>
+          <li>Click <em>Review due</em> in a deck to start a session.</li>
+          <li>Use Space to flip during review.</li>
+          <li>The scheduler is a tiny SM‑2 variant; grades adjust ease & interval.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // delegate flip click on the review card area
+    document.addEventListener('click', (e)=>{ if(e.target && e.target.id==='flipArea'){ document.getElementById('flip').click(); } });
+  </script>
+</body>
+</html>
+
+
