@@ -32,6 +32,132 @@
     .right{margin-left:auto}
     .rev-card{min-height:180px;display:flex;align-items:center;justify-content:center;text-align:center;font-size:22px;padding:18px;border:1px dashed #2d3748;border-radius:16px;background:#0f1623}
   </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🧠 StudyCards</h1>
+
+    <div class="tabs">
+      <div class="tab active" data-tab="decks">Decks</div>
+      <div class="tab" data-tab="editor">Editor</div>
+      <div class="tab" data-tab="review">Review</div>
+      <div class="tab" data-tab="settings">Settings</div>
+    </div>
+
+    <!-- Decks view -->
+    <div data-view="decks">
+      <div class="card">
+        <h3 style="margin:0 0 8px">Your decks</h3>
+        <div id="deckList" class="col"></div>
+      </div>
+      <div class="space"></div>
+      <div class="card">
+        <h3 style="margin:0 0 8px">Create deck</h3>
+        <form id="createDeck" class="grid">
+          <div>
+            <label for="deckName">Name</label>
+            <input id="deckName" placeholder="e.g., Biology 101" required>
+          </div>
+          <div style="display:flex;align-items:flex-end">
+            <button class="btn acc" type="submit">Create</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Editor view -->
+    <div data-view="editor" style="display:none">
+      <div class="row" style="margin-bottom:6px">
+        <h3 id="deckTitle" style="margin:0">(no deck)</h3>
+        <div class="right">
+          <button class="btn" onclick="showView('decks')">Back to decks</button>
+          <button class="btn" onclick="CURRENT_DECK && (REVIEW_QUEUE=listDueCards(DB.decks[CURRENT_DECK]), SHOW_BACK=false, showView('review'), renderReview())">Review due</button>
+        </div>
+      </div>
+
+      <!-- Manual Add Card -->
+      <div class="card">
+        <form id="addCard" class="grid">
+          <div>
+            <label for="front">Front</label>
+            <textarea id="front" rows="3" placeholder="Question / term" required></textarea>
+          </div>
+          <div>
+            <label for="back">Back</label>
+            <textarea id="back" rows="3" placeholder="Answer / definition" required></textarea>
+          </div>
+          <div>
+            <label for="tags">Tags (comma-separated)</label>
+            <input id="tags" placeholder="e.g., cell, chapter1">
+          </div>
+          <div style="display:flex;align-items:flex-end">
+            <button class="btn acc" type="submit">Add card</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- AI Generate -->
+      <div class="space"></div>
+      <div class="card">
+        <h3 style="margin:0 0 8px">AI Generate Cards</h3>
+        <textarea id="aiInput" rows="6" placeholder="Paste notes or textbook text here..."></textarea>
+        <div class="row" style="margin-top:8px">
+          <button class="btn acc" id="aiGenerateReal">Generate with AI</button>
+        </div>
+        <div class="muted" style="font-size:12px;margin-top:6px">
+          Uses OpenAI via your Vercel backend. New cards are tagged “AI”.
+        </div>
+      </div>
+
+      <div class="space"></div>
+      <div class="card">
+        <h3 style="margin:0 0 8px">Cards</h3>
+        <div id="cardsTable"></div>
+      </div>
+    </div>
+
+    <!-- Review view -->
+    <div data-view="review" style="display:none">
+      <div class="row" style="margin-bottom:6px">
+        <div class="pill" id="revCount">0 due</div>
+        <div class="right"><button class="btn" onclick="showView('decks')">Back</button></div>
+      </div>
+      <div class="card">
+        <div id="revBox" class="col"></div>
+        <div class="space"></div>
+        <div class="row" id="revBtns" style="justify-content:center;gap:8px">
+          <button class="btn bad" id="again">Again</button>
+          <button class="btn warn" id="hard">Hard</button>
+          <button class="btn ok" id="good">Good</button>
+          <button class="btn acc" id="easy">Easy</button>
+          <button class="btn" id="flip" title="Space">Flip</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings / Import-Export -->
+    <div data-view="settings" style="display:none">
+      <div class="card">
+        <h3 style="margin:0 0 8px">Backup / Import</h3>
+        <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn" onclick="const b=new Blob([JSON.stringify(DB,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='studycards-backup.json';a.click();">Export full database</button>
+          <label class="btn" for="importFile" style="cursor:pointer">Import JSON</label>
+          <input type="file" id="importFile" accept="application/json" style="display:none" />
+          <span class="muted">(You can also export a single deck from the Decks page)</span>
+        </div>
+      </div>
+      <div class="space"></div>
+      <div class="card muted" style="font-size:14px">
+        <div><strong>Tips</strong></div>
+        <ul>
+          <li>Click <em>Review due</em> in a deck to start a session.</li>
+          <li>Use Space to flip during review.</li>
+          <li>The scheduler is a tiny SM-2 variant; grades adjust ease &amp; interval.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
   <script>
   // ------------------------
   // Simple localStorage store
@@ -50,7 +176,7 @@
   function gradeCard(card, grade){
     // grade: 0=Again, 1=Hard, 2=Good, 3=Easy
     const now = new Date();
-    if(card.reps === 0){ card.interval = (grade <= 1) ? 1 : 1; card.reps = 1; }
+    if(card.reps === 0){ card.interval = 1; card.reps = 1; }
     else if(card.reps === 1){ card.interval = (grade <= 1) ? 2 : 3; card.reps = 2; }
     else {
       const q = grade===3?5:(grade===2?4:(grade===1?3:2));
@@ -69,21 +195,17 @@
   // ------------------------
   let DB = loadDB();
   let CURRENT_DECK = null;
-  let REVIEW_QUEUE = []; // array of card objects (cloned)
+  let REVIEW_QUEUE = [];
   let SHOW_BACK = false;
 
   function listDueCards(deck){
     const today = todayISO();
     const ids = deck.cards || [];
     const due = ids.map(id=>DB.cards[id]).filter(c => !c.due || c.due <= today);
-    // Shuffle
     for(let i=due.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [due[i],due[j]]=[due[j],due[i]] }
     return due;
   }
 
-  // ------------------------
-  // UI rendering
-  // ------------------------
   function el(sel){ return document.querySelector(sel); }
   function els(sel){ return [...document.querySelectorAll(sel)]; }
 
@@ -147,7 +269,7 @@
   }
 
   function escapeHTML(s){
-    return (s||'').replace(/[&<>"]/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[m]));
+    return (s||'').replace(/[&<>"]/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[m]));
   }
 
   // ------------------------
@@ -244,6 +366,41 @@
 
     // Register service worker for PWA
     if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js'); }
+
+    // --- AI Generate (OpenAI via your Vercel backend) ---
+    const AI_ENDPOINT = "https://flashiq-ai-backend.vercel.app/api/generate";
+    const aiBtn = document.getElementById("aiGenerateReal");
+    if(aiBtn){
+      aiBtn.addEventListener("click", async () => {
+        if (!CURRENT_DECK) { alert('Open a deck first.'); return; }
+        const text = (document.getElementById("aiInput").value || "").trim();
+        if (!text) return;
+
+        try {
+          const resp = await fetch(AI_ENDPOINT, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text })
+          });
+          const data = await resp.json();
+          const cards = (data.cards || []).filter(c => c.front && c.back);
+
+          if (!cards.length) { alert("No cards returned. Try shorter, denser notes."); return; }
+
+          for (const c of cards) {
+            const id = uid();
+            DB.cards[id] = { id, front: c.front, back: c.back, tags: ["AI"], ease:2.5, reps:0, interval:0, due:todayISO() };
+            DB.decks[CURRENT_DECK].cards.push(id);
+          }
+          saveDB(DB);
+          renderDeckView();
+          alert(`Added ${cards.length} AI-generated cards.`);
+        } catch (e) {
+          console.error(e);
+          alert("AI request failed.");
+        }
+      });
+    }
   });
 
   function showView(name){
@@ -252,184 +409,20 @@
     els('.tab').forEach(x=>x.classList.remove('active'));
     el(`[data-tab="${name}"]`).classList.add('active');
   }
-
-  function gradeAndNext(grade){
-    if(REVIEW_QUEUE.length===0) return;
-    const c = REVIEW_QUEUE[0];
-    gradeCard(c, grade);
-    DB.cards[c.id] = {...DB.cards[c.id], ease:c.ease, reps:c.reps, interval:c.interval, due:c.due};
-    saveDB(DB);
-    REVIEW_QUEUE.shift(); SHOW_BACK=false; renderReview();
-  }
   </script>
-</head>
-<body>
-  <div class="wrap">
-    <h1>🧠 StudyCards</h1>
-    <div class="tabs">
-      <div class="tab active" data-tab="decks">Decks</div>
-      <div class="tab" data-tab="editor">Editor</div>
-      <div class="tab" data-tab="review">Review</div>
-      <div class="tab" data-tab="settings">Settings</div>
-    </div>
-
-    <!-- Decks view -->
-    <div data-view="decks">
-      <div class="card">
-        <h3 style="margin:0 0 8px">Your decks</h3>
-        <div id="deckList" class="col"></div>
-      </div>
-      <div class="space"></div>
-      <div class="card">
-        <h3 style="margin:0 0 8px">Create deck</h3>
-        <form id="createDeck" class="grid">
-          <div>
-            <label>Name</label>
-            <input id="deckName" placeholder="e.g., Biology 101" required>
-          </div>
-          <div style="display:flex;align-items:flex-end">
-            <button class="btn acc" type="submit">Create</button>
-          </div>
-        </form>
-      </div>
-    </div>
-
-    <!-- Editor view -->
-    <div data-view="editor" style="display:none">
-      <div class="row" style="margin-bottom:6px">
-        <h3 id="deckTitle" style="margin:0">(no deck)</h3>
-        <div class="right">
-          <button class="btn" onclick="showView('decks')">Back to decks</button>
-          <button class="btn" onclick="CURRENT_DECK && (REVIEW_QUEUE=listDueCards(DB.decks[CURRENT_DECK]), SHOW_BACK=false, showView('review'), renderReview())">Review due</button>
-        </div>
-      </div>
-
-      <!-- Manual Add Card -->
-      <div class="card">
-        <form id="addCard" class="grid">
-          <div>
-            <label>Front</label>
-            <textarea id="front" rows="3" placeholder="Question / term" required></textarea>
-          </div>
-          <div>
-            <label>Back</label>
-            <textarea id="back" rows="3" placeholder="Answer / definition" required></textarea>
-          </div>
-          <div>
-            <label>Tags (comma-separated)</label>
-            <input id="tags" placeholder="e.g., cell, chapter1">
-          </div>
-          <div style="display:flex;align-items:flex-end">
-            <button class="btn acc" type="submit">Add card</button>
-          </div>
-        </form>
-      </div>
-
-      <!-- AI Generate -->
-      <div class="space"></div>
-      <div class="card">
-        <h3 style="margin:0 0 8px">AI Generate Cards</h3>
-        <textarea id="aiInput" rows="6" placeholder="Paste notes or textbook text here..."></textarea>
-        <div class="row" style="margin-top:8px">
-          <button class="btn acc" id="aiGenerateReal">Generate with AI</button>
-        </div>
-        <div class="muted" style="font-size:12px;margin-top:6px">
-          Uses OpenAI via your Vercel backend. New cards are tagged “AI”.
-        </div>
-      </div>
-
-      <div class="space"></div>
-      <div class="card">
-        <h3 style="margin:0 0 8px">Cards</h3>
-        <div id="cardsTable"></div>
-      </div>
-    </div>
-
-    <!-- Review view -->
-    <div data-view="review" style="display:none">
-      <div class="row" style="margin-bottom:6px">
-        <div class="pill" id="revCount">0 due</div>
-        <div class="right"><button class="btn" onclick="showView('decks')">Back</button></div>
-      </div>
-      <div class="card">
-        <div id="revBox" class="col"></div>
-        <div class="space"></div>
-        <div class="row" id="revBtns" style="justify-content:center;gap:8px">
-          <button class="btn bad" id="again">Again</button>
-          <button class="btn warn" id="hard">Hard</button>
-          <button class="btn ok" id="good">Good</button>
-          <button class="btn acc" id="easy">Easy</button>
-          <button class="btn" id="flip" title="Space">Flip</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Settings / Import-Export -->
-    <div data-view="settings" style="display:none">
-      <div class="card">
-        <h3 style="margin:0 0 8px">Backup / Import</h3>
-        <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
-          <button class="btn" onclick="const b=new Blob([JSON.stringify(DB,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='studycards-backup.json';a.click();">Export full database</button>
-          <label class="btn" for="importFile" style="cursor:pointer">Import JSON</label>
-          <input type="file" id="importFile" accept="application/json" style="display:none" />
-          <span class="muted">(You can also export a single deck from the Decks page)</span>
-        </div>
-      </div>
-      <div class="space"></div>
-      <div class="card muted" style="font-size:14px">
-        <div><strong>Tips</strong></div>
-        <ul>
-          <li>Click <em>Review due</em> in a deck to start a session.</li>
-          <li>Use Space to flip during review.</li>
-          <li>The scheduler is a tiny SM-2 variant; grades adjust ease & interval.</li>
-        </ul>
-      </div>
-    </div>
-  </div>
 
   <script>
-    // delegate flip click on the review card area
+    // flip on card click
     document.addEventListener('click', (e)=>{ if(e.target && e.target.id==='flipArea'){ document.getElementById('flip').click(); } });
 
-    // --- AI Generate (OpenAI via your Vercel backend) ---
-    // ⬇️ REPLACE with your exact Vercel URL if different:
-    const AI_ENDPOINT = "https://flashiq-ai-backend.vercel.app/api/generate";
-
-    document.addEventListener('DOMContentLoaded', ()=>{
-      const btn = document.getElementById("aiGenerateReal");
-      if(btn){
-        btn.addEventListener("click", async () => {
-          if (!CURRENT_DECK) { alert('Open a deck first.'); return; }
-          const box = document.getElementById("aiInput");
-          const text = box.value.trim();
-          if (!text) return;
-
-          try {
-            const resp = await fetch(AI_ENDPOINT, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ text })
-            });
-            const data = await resp.json();
-            const cards = (data.cards || []).filter(c => c.front && c.back);
-
-            if (!cards.length) { alert("No cards returned. Try shorter, denser notes."); return; }
-
-            for (const c of cards) {
-              const id = uid();
-              DB.cards[id] = { id, front: c.front, back: c.back, tags: ["AI"], ease:2.5, reps:0, interval:0, due:todayISO() };
-              DB.decks[CURRENT_DECK].cards.push(id);
-            }
-            saveDB(DB);
-            renderDeckView();
-            alert(`Added ${cards.length} AI-generated cards.`);
-          } catch (e) {
-            console.error(e);
-            alert("AI request failed.");
-          }
-        });
-      }
-    });
+    function gradeAndNext(grade){
+      if(REVIEW_QUEUE.length===0) return;
+      const c = REVIEW_QUEUE[0];
+      gradeCard(c, grade);
+      DB.cards[c.id] = {...DB.cards[c.id], ease:c.ease, reps:c.reps, interval:c.interval, due:c.due};
+      saveDB(DB);
+      REVIEW_QUEUE.shift(); SHOW_BACK=false; renderReview();
+    }
   </script>
 </body>
 </html>
